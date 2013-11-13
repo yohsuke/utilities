@@ -1,0 +1,117 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use LWP::UserAgent;
+use Time::HiRes;
+use threads;
+use threads::shared;
+use Thread::Queue;
+use POSIX qw(strftime);
+use Getopt::Long qw(:config posix_default no_ignore_case gnu_compat);
+
+our $is_out=1;
+our $multi_thread=0;
+
+GetOptions('out|o=s' => \$is_out, 'number_of_thread|n=s' => \$multi_thread);
+
+my $lock :shared = 1;
+my $dir = strftime("%Y%m%d_%H%M%S", localtime());
+
+if($is_out == 1) { system("mkdir $dir");}
+
+if($multi_thread > 0){
+	# create Q
+	my $q = Thread::Queue->new();
+
+	my $thread_length = $multi_thread;
+
+	my @thread_list = ();
+	foreach(0..($thread_length-1)){
+		my $th = threads->create(
+			sub {
+				my $i=shift;
+				while (my $url = $q->dequeue()) {
+					do_execute($i,$url);
+				}
+			}, $_
+		);
+    	$th->yield();
+		push @thread_list, $th;
+	}
+
+	# insert Q
+    foreach my $url (<STDIN>){
+    	chomp $url;
+    	$q->enqueue($url);
+    }
+	foreach(0..$thread_length){
+		$q->enqueue(undef);
+	}
+
+	# execute jobs
+    foreach my $th (@thread_list){
+	    $th->join;
+    }
+}else{
+	main_single();
+}
+#print "end\n";
+
+
+sub main_single{
+	foreach my $url (<STDIN>){
+		chomp $url;
+		do_execute(0,$url);
+	}
+}
+
+
+sub do_execute {
+	my ($tid, $url) = @_;
+	my $t=Time::HiRes::time;
+	my $status=http_status("$url");
+	$t =Time::HiRes::time-$t;
+	$t = $t*1000;
+	
+	lock($lock);
+	if($url !~ /delete_cache/){	# delete_cacheは色付けしない
+		print ($status ne "200" ? "\e[31m":"\e[32m");
+	}
+	$url =~ s'%'%%'g;
+#	my $len = int(log($multi_thread+0.00000001)/log(10));
+	my $len = 5;
+	printf ("[%${len}d] $status\t%5.2f ms\t$url\n",$tid,$t);
+	print "\e[0m";
+}
+
+
+sub http_status{
+
+	my $url=shift;
+
+	my $file=$url;
+	$file =~ s/[^\w\.]/_/g;
+
+	my $http_ua="SoftBank/1.0/930SH/SHJ001[/Serial] Browser/NetFront/3.4 Profile/MIDP-2.0 Configuration/CLDC-1.1";
+
+
+	# HTTP_USER_AGENTを「MyUserAgent」という名前にする
+	my $ua = LWP::UserAgent->new(agent => "$http_ua");
+	$ua->timeout( 3 );
+
+	# HTTP method GETでHTTPリクエストを送信
+	my $resp = $ua->get("$url");
+
+	# 結果を保存（delete_cacheは保存しない）
+	if($is_out == 1 && $url !~ /delete_cache/){
+		open (FH, ">./$dir/$file") || die "Error: $dir$file $!\n";
+		binmode(FH);
+		print FH $resp->content;
+		close (FH);
+	}
+	
+	#print $resp->content;
+	return $resp->code;
+
+}

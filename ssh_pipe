@@ -1,0 +1,97 @@
+#!/usr/bin/perl
+
+if($#ARGV == -1){
+print "usage:\n";
+print q{ssh_pipe --host=172.25.13.18{1,2,3,4,5,6,7,8} "tail -F /opt/thumbhub/logs/ema_obs/regist.log"};
+print "\n";
+exit();
+}
+
+our $USER = get_user();
+our $PASSWD = get_password();
+
+our @HOSTS = ();
+our $CMD = $ARGV[$#ARGV];
+our $MULTI_THREAD = 0;
+
+use strict;
+use warnings;
+use threads;
+use threads::shared;
+use Getopt::Long;
+use Net::OpenSSH;
+
+my $lock :shared = 1;
+
+GetOptions(
+		'host=s' => \@HOSTS,
+		'multi' => \$MULTI_THREAD);
+
+
+
+
+
+sub get_user{
+	print STDERR ("USER: ");
+	chomp(my $u=<STDIN>);
+	return $u;
+}
+sub get_password{
+	print STDERR ("PASSWORD: ");
+	system("stty -echo");
+	chomp(my $p=<STDIN>);
+	system("stty echo");
+	print STDERR "\n";
+	return $p;
+}
+
+
+
+sub syncronized_out{
+	lock($lock);
+	print @_;
+	$|=1;
+}
+
+sub ssh_tail{
+	my ($host)=@_;
+        my $ssh=Net::OpenSSH->new("$USER:$PASSWD\@$host",master_opts => [-o => "UserKnownHostsFile=/dev/null", -o => "StrictHostKeyChecking=no"]);
+	$ssh->error and die "Couldn't establish SSH connection: ". $ssh->error;
+	
+	my %opts=(
+		stdin_discard => 1,
+		stdout_pipe => 1,
+		stderr_pipe => 1,
+	);
+	my (undef,$out,undef,undef) = $ssh->open_ex(\%opts, "$CMD") or die "pipe out fail! $CMD". $ssh->error;
+
+	while(<$out>){
+		syncronized_out("$host\t$_");
+	}
+	close($out);
+#	print("----- $host \[end\] -----\n");
+}
+
+
+
+
+
+if($MULTI_THREAD == 1){
+	my @thread_list=();
+	foreach my $h (@HOSTS){
+		my $thread=threads->new(\&ssh_tail,"$h");
+		$thread->yield();
+		push @thread_list,$thread;
+	}
+	foreach my $t (@thread_list){
+		$t->join;
+	}
+}else{
+	foreach my $h (@HOSTS){
+		&ssh_tail("$h");
+	}
+}
+
+
+print "end";
+

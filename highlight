@@ -1,0 +1,14 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Term::ANSIColor;
+
+our $PATTERN="(\d+)$";
+our $COLOR="red";
+
+while(<STDIN>){
+s/$PATTERN/&colored("$1","$COLOR")/eg;
+print;
+$|++;
+}

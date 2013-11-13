@@ -1,0 +1,113 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Time::HiRes;
+use threads; 
+use threads::shared;
+use Getopt::Long;
+
+our $INTERVAL = 1.0;
+our $PROGRESS = 0;
+our $FPS = 10;
+
+GetOptions(	'interval=f' => \$INTERVAL,
+			'progress' => \$PROGRESS);
+
+# short interval is same as progress
+if($INTERVAL < 1.0/$FPS){
+	$PROGRESS = 0;
+}
+
+my $progress_count = 0;
+my $lock :shared = 1;
+my @column :shared = ();
+my %hash :shared = ();
+my $total :shared = 0;
+
+&main;
+
+sub main{
+	threads->new(\&sub_read);
+	while(1){
+		my $P = $FPS * int $INTERVAL;
+		my $trigger = (($progress_count % $P) == 0);
+		$progress_count++;
+		if($PROGRESS){
+			Time::HiRes::sleep 1.0/$FPS;
+		}else{
+			Time::HiRes::sleep $INTERVAL;
+		}
+                if($progress_count < $P){
+                        lock($lock);
+			if($column[0] =~/^[0-9\.]+$/){
+	                        @column = sort {$a <=> $b} @column;
+			}else{
+				@column = sort @column;
+			}
+                }
+		{
+			lock($lock);
+			&line_clear;
+			printf "%s\tTOTAL:%d\t", &format_date, $total;
+			print &format_hash(\%hash);
+			print "\n";
+			if($PROGRESS){
+				if($trigger == 1){
+					&clear;
+				}else{
+					&cursor_up;
+				}
+			}else{
+				&clear;
+			}
+		}
+	}
+}
+
+sub cursor_up {
+	print "\033\[1A";
+}
+sub line_clear {
+	print "\033\[K";
+}
+
+sub format_hash($) {
+	my ($href) = @_;
+	my @a = ();
+#	foreach my $k (keys %$href){
+	foreach my $k (@column){
+		my $str="-";
+		$str = $href->{$k} if(defined $href->{$k});
+		push @a, "$k:$str";
+	}
+	return join "\t",@a;
+}
+sub flush {
+	$|=1;
+}
+
+sub clear {
+	lock($lock);
+	%hash = ();
+	$total = 0;
+}
+
+sub format_date {
+	my ($sec,$min,$hour,$day,$month,$year,$wdy,$yday) = localtime(time);
+	return sprintf("%d-%02d-%02dT%02d:%02d:%02d",$year+1900,$month+1,$day,$hour,$min,$sec);
+}
+sub sub_read {
+	while(<STDIN>){
+		my $value = $_;
+		chomp $value;
+		{
+			lock($lock);
+			$hash{$value} = 0 unless (defined $hash{$value});
+			push @column, "$value" unless(grep {"$_" eq "$value"} @column);
+			
+			$hash{$value}++;
+			$total++;
+		}
+	}
+}
