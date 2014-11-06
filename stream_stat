@@ -2,28 +2,38 @@
 
 use strict;
 use warnings;
-use Time::HiRes;
 use threads; 
 use threads::shared;
 use Getopt::Long;
 
 our $INTERVAL = 1.0;
 our $PROGRESS = 0;
+our $NO_ESCAPE_SEQUENCE = 0;
 our $FPS = 10;
 
-GetOptions(	'interval=f' => \$INTERVAL,
-			'progress' => \$PROGRESS);
+GetOptions(
+	'interval=f' => \$INTERVAL,
+	'progress'   => \$PROGRESS,
+	'no-escape-sequence'  => \$NO_ESCAPE_SEQUENCE,
+	);
 
 # short interval is same as progress
 if($INTERVAL < 1.0/$FPS){
 	$PROGRESS = 0;
 }
+if($NO_ESCAPE_SEQUENCE){
+	$PROGRESS = 0;
+}
 
-my $progress_count = 0;
+
+## FIXME
+my $progress_count :shared= 0;
 my $lock :shared = 1;
 my @column :shared = ();
+my %hash_before :shared = ();
 my %hash :shared = ();
 my $total :shared = 0;
+my $total_before :shared = 0;
 
 &main;
 
@@ -31,57 +41,92 @@ sub main{
 	threads->new(\&sub_read);
 	while(1){
 		my $P = $FPS * int $INTERVAL;
-		my $trigger = (($progress_count % $P) == 0);
+		my $trigger = (($progress_count % $P) == ($P-1));
 		$progress_count++;
 		if($PROGRESS){
-			Time::HiRes::sleep 1.0/$FPS;
+			ssleep(1.0/$FPS);
 		}else{
-			Time::HiRes::sleep $INTERVAL;
+			ssleep($INTERVAL);
 		}
-                if($progress_count < $P){
-                        lock($lock);
-			if($column[0] =~/^[0-9\.]+$/){
-	                        @column = sort {$a <=> $b} @column;
-			}else{
-				@column = sort @column;
-			}
+                if($progress_count <= $P){
+                    lock($lock);
+                    @column = sort {
+                       	my ($da) = ($a=~/^([0-9\.]*)/);
+                       	my ($db) = ($b=~/^([0-9\.]*)/);
+                       	return $da <=> $db if("$da" ne "$db");
+                        return $a cmp $b;} @column;
                 }
 		{
 			lock($lock);
 			&line_clear;
-			printf "%s\tTOTAL:%d\t", &format_date, $total;
-			print &format_hash(\%hash);
-			print "\n";
+			my $progressing = ($PROGRESS && $trigger!=1);
+			my $line_str = sprintf("%s  TOTAL:%-18s  ", &format_date, &colored($total,$total_before,1,$progressing)) . &format_hash(\%hash, \%hash_before, $progressing);
+			printf "$line_str\n";
 			if($PROGRESS){
 				if($trigger == 1){
-					&clear;
+					&clear if(!$NO_ESCAPE_SEQUENCE);
 				}else{
-					&cursor_up;
+					&cursor_up($line_str) if(!$NO_ESCAPE_SEQUENCE);
 				}
 			}else{
-				&clear;
+				&clear if(!$NO_ESCAPE_SEQUENCE);
 			}
+			&flush;
 		}
 	}
+
 }
 
+sub ssleep {
+	select(undef, undef, undef, $_[0]);  # TODO 精度改善
+}
 sub cursor_up {
-	print "\033\[1A";
+	my ($line) = @_;
+	$line =~ s/\033\[(\d+;)*\d+\w//g;
+	my $c=1+int((length $line) / (1+`tput cols`));
+	print "\033\[${c}A";
 }
 sub line_clear {
 	print "\033\[K";
 }
 
-sub format_hash($) {
-	my ($href) = @_;
-	my @a = ();
-#	foreach my $k (keys %$href){
+sub format_hash($$) {
+	my ($href,$href_before,$trigger) = @_;
+	my $line = "";
 	foreach my $k (@column){
-		my $str="-";
-		$str = $href->{$k} if(defined $href->{$k});
-		push @a, "$k:$str";
+		
+
+my $str_crr = $href->{$k};
+		my $str_before = $href_before->{$k};
+		$str_crr ||= 0;
+		$str_before ||= 0;
+		my $str = colored($str_crr,$str_before,0,$trigger);
+		$line .= sprintf " %s:%-24s", "$k", "$str";
 	}
-	return join "\t",@a;
+	return $line;
+}
+sub colored {
+	my ($crr,$bfr,$is_bold,$is_dark) = @_;
+	my $c = 0+$crr;
+	my $b = 0+$bfr;
+	my $str = ($is_bold || $is_dark) ? "1;":"0;";
+	if($is_dark){
+		$str .= "30m";
+	}
+	elsif(abs($c-$b) < $c*0.08){
+		$str .= "00m";
+	}
+	elsif($c > $b){
+		$str .= "35m";
+	}else{
+		$str .= "36m";
+	}
+	$crr = "-" if($crr == 0);
+	if($NO_ESCAPE_SEQUENCE){
+		return $crr;
+	}else{
+		return "\033\[$str$crr\033\[00m";
+	}
 }
 sub flush {
 	$|=1;
@@ -89,7 +134,9 @@ sub flush {
 
 sub clear {
 	lock($lock);
+	%hash_before = %hash;
 	%hash = ();
+	$total_before = $total;
 	$total = 0;
 }
 
